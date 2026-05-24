@@ -8,6 +8,7 @@ import authRoutes from './routes/auth.js';
 import recordRoutes from './routes/records.js';
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 
 // Connect to MongoDB
@@ -26,7 +27,10 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
+      // Cross-origin (Netlify + Render): must be 'none' + secure:true
+      // so browser sends cookie across different domains.
       secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     },
   })
