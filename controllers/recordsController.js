@@ -3,7 +3,7 @@ import User from '../models/User.js';
 // GET /api/records
 export const getRecords = async (req, res) => {
   try {
-    const user = await User.findById(req.session.userId);
+    const user = await User.findById(req.userId || req.session?.userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     return res.status(200).json({ qazaRecord: user.qazaRecord });
@@ -26,7 +26,7 @@ export const updateRecords = async (req, res) => {
     }
 
     const user = await User.findByIdAndUpdate(
-      req.session.userId,
+      req.userId || req.session?.userId,
       {
         $set: {
           'qazaRecord.fajr':     fajr     ?? undefined,
@@ -63,7 +63,7 @@ export const updateSingleRecord = async (req, res) => {
     }
 
     const user = await User.findByIdAndUpdate(
-      req.session.userId,
+      req.userId || req.session?.userId,
       { $set: { [`qazaRecord.${prayer}`]: value } },
       { new: true }
     );

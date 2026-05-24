@@ -1,4 +1,5 @@
 import { OAuth2Client } from 'google-auth-library';
+import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -28,10 +29,18 @@ export const googleAuth = async (req, res) => {
       user = await User.create({ googleId, email, name, avatar });
     }
 
+    // Generate JWT token
+    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET || 'namazly_secret', {
+      expiresIn: '7d',
+    });
+
     // Store user in session
-    req.session.userId = user._id;
+    if (req.session) {
+      req.session.userId = user._id;
+    }
 
     return res.status(200).json({
+      token,
       user: {
         id: user._id,
         name: user.name,
@@ -58,7 +67,7 @@ export const logout = (req, res) => {
 // GET /api/auth/me
 export const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.session.userId);
+    const user = await User.findById(req.userId || req.session?.userId);
     if (!user) return res.status(401).json({ message: 'Not authenticated' });
 
     return res.status(200).json({
