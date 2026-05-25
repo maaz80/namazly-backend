@@ -7,20 +7,42 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 // POST /api/auth/google
 export const googleAuth = async (req, res) => {
   try {
-    const { credential } = req.body;
+    const { credential, accessToken } = req.body;
 
-    if (!credential) {
-      return res.status(400).json({ message: 'No credential provided' });
+    if (!credential && !accessToken) {
+      return res.status(400).json({ message: 'No credential or accessToken provided' });
     }
 
-    // Verify the Google ID token
-    const ticket = await client.verifyIdToken({
-      idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
+    let googleId, email, name, avatar;
 
-    const payload = ticket.getPayload();
-    const { sub: googleId, email, name, picture: avatar } = payload;
+    if (credential) {
+      // Verify the Google ID token
+      const ticket = await client.verifyIdToken({
+        idToken: credential,
+        audience: process.env.GOOGLE_CLIENT_ID,
+      });
+
+      const payload = ticket.getPayload();
+      googleId = payload.sub;
+      email = payload.email;
+      name = payload.name;
+      avatar = payload.picture;
+    } else {
+      // Verify Google Access Token via userinfo endpoint
+      const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!response.ok) {
+        return res.status(401).json({ message: 'Failed to verify Google access token' });
+      }
+
+      const payload = await response.json();
+      googleId = payload.sub;
+      email = payload.email;
+      name = payload.name;
+      avatar = payload.picture;
+    }
 
     // Find or create the user
     let user = await User.findOne({ googleId });
