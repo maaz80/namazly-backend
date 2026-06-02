@@ -6,6 +6,7 @@ import connectDB from './config/db.js';
 
 import authRoutes from './routes/auth.js';
 import recordRoutes from './routes/records.js';
+import reviewRoutes from './routes/reviews.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -31,7 +32,7 @@ app.use(
       // so browser sends cookie across different domains.
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
     },
   })
 );
@@ -39,6 +40,7 @@ app.use(
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/records', recordRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', message: 'Namazly API is running' }));
