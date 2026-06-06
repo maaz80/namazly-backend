@@ -1,5 +1,6 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
+import https from 'https';
 import Review from '../models/Review.js';
 
 const router = express.Router();
@@ -69,6 +70,38 @@ router.post('/', async (req, res) => {
     console.error('Error creating review:', err);
     res.status(500).json({ success: false, message: 'Server error creating review' });
   }
+});
+
+// @route   GET /api/reviews/proxy-avatar
+// @desc    Proxy Google avatars with high-performance streaming and a 1-year cache lifespan
+router.get('/proxy-avatar', (req, res) => {
+  const { url } = req.query;
+  if (!url) {
+    return res.status(400).send('URL is required');
+  }
+
+  // Ensure url is from googleusercontent to prevent SSRF vulnerabilities
+  if (
+    !url.startsWith('https://lh3.googleusercontent.com') &&
+    !url.startsWith('https://googleusercontent.com') &&
+    !url.startsWith('https://lh3.google.com')
+  ) {
+    return res.status(400).send('Invalid avatar URL host');
+  }
+
+  https.get(url, (response) => {
+    if (response.statusCode !== 200) {
+      return res.status(response.statusCode).send('Failed to fetch avatar');
+    }
+
+    res.setHeader('Content-Type', response.headers['content-type'] || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // 1 year cache
+
+    response.pipe(res);
+  }).on('error', (err) => {
+    console.error('Error proxying avatar:', err);
+    res.status(500).send('Error proxying avatar');
+  });
 });
 
 export default router;
