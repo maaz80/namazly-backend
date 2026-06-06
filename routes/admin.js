@@ -2,6 +2,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import Review from '../models/Review.js';
+import Visit from '../models/Visit.js';
 import { requireAdmin } from '../middleware/adminAuth.js';
 
 const router = express.Router();
@@ -33,10 +34,59 @@ router.post('/login', (req, res) => {
 // GET /api/admin/stats — aggregate dashboard statistics
 router.get('/stats', requireAdmin, async (req, res) => {
   try {
+    const visitFilter = req.query.visitFilter || 'day'; // day, week, month
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    const [totalUsers, todayUsers, totalReviews, avgRatingResult, recentUsers, ratingDistribution, userGrowth] = await Promise.all([
+    // Define date boundaries for visitor graph based on selected filter
+    let visitStartDate;
+    let groupFormat;
+
+    if (visitFilter === 'week') {
+      // Last 12 weeks
+      visitStartDate = new Date(now.getTime() - 12 * 7 * 24 * 60 * 60 * 1000);
+      groupFormat = 'week';
+    } else if (visitFilter === 'month') {
+      // Last 12 months
+      visitStartDate = new Date(now.getFullYear() - 1, now.getMonth() + 1, 1);
+      groupFormat = '%Y-%m';
+    } else {
+      // Last 30 days (default)
+      visitStartDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      groupFormat = '%Y-%m-%d';
+    }
+
+    // Build the aggregation group pipeline for visits
+    let groupIdStage;
+    if (visitFilter === 'week') {
+      // MongoDB group by calendar week
+      groupIdStage = {
+        $concat: [
+          { $dateToString: { format: '%Y', date: '$createdAt' } },
+          '-W',
+          { $toString: { $week: '$createdAt' } }
+        ]
+      };
+    } else {
+      groupIdStage = { $dateToString: { format: groupFormat, date: '$createdAt' } };
+    }
+
+    const [
+      totalUsers,
+      todayUsers,
+      totalReviews,
+      avgRatingResult,
+      recentUsers,
+      ratingDistribution,
+      userGrowth,
+      // NEW visitor metrics queries
+      totalVisits,
+      pwaInstalls,
+      calculatedNamazCount,
+      uniqueVisitors,
+      visitorGrowth,
+      recentVisitors
+    ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ createdAt: { $gte: startOfToday } }),
       Review.countDocuments(),
@@ -56,7 +106,31 @@ router.get('/stats', requireAdmin, async (req, res) => {
           }
         },
         { $sort: { _id: 1 } }
-      ])
+      ]),
+      // 1. Total visits
+      Visit.countDocuments(),
+      // 2. PWA installs
+      Visit.countDocuments({ isPwaInstall: true }),
+      // 3. Calculated namaz count
+      Visit.countDocuments({ calculatedNamaz: true }),
+      // 4. Unique visitors (count distinct visitorIds)
+      Visit.distinct('visitorId').then(arr => arr.length),
+      // 5. Visitor growth grouped by day/week/month
+      Visit.aggregate([
+        { $match: { createdAt: { $gte: visitStartDate } } },
+        {
+          $group: {
+            _id: groupIdStage,
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]),
+      // 6. Recent visitor logs
+      Visit.find()
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .select('email ip userAgent calculatedNamaz isPwaInstall createdAt visitorId')
     ]);
 
     const avgRating = avgRatingResult.length > 0 ? Math.round(avgRatingResult[0].avg * 10) / 10 : 0;
@@ -67,6 +141,10 @@ router.get('/stats', requireAdmin, async (req, res) => {
       if (r._id >= 1 && r._id <= 5) ratingDist[r._id - 1] = r.count;
     });
 
+    // Calculate average visits per active period in the graph
+    const totalGroupedVisits = visitorGrowth.reduce((sum, item) => sum + item.count, 0);
+    const avgVisits = visitorGrowth.length > 0 ? Math.round((totalGroupedVisits / visitorGrowth.length) * 10) / 10 : 0;
+
     return res.json({
       success: true,
       stats: {
@@ -76,7 +154,15 @@ router.get('/stats', requireAdmin, async (req, res) => {
         avgRating,
         recentUsers,
         ratingDistribution: ratingDist,
-        userGrowth
+        userGrowth,
+        // NEW visitor metrics returned
+        totalVisits,
+        pwaInstalls,
+        calculatedNamazCount,
+        uniqueVisitors,
+        visitorGrowth,
+        avgVisits,
+        recentVisitors
       }
     });
   } catch (err) {
@@ -136,6 +222,78 @@ router.delete('/reviews/:id', requireAdmin, async (req, res) => {
   } catch (err) {
     console.error('Admin delete review error:', err);
     return res.status(500).json({ success: false, message: 'Server error deleting review' });
+  }
+});
+
+// GET /api/admin/visitors — list all visitors or unique visitors with pagination
+router.get('/visitors', requireAdmin, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const type = req.query.type || 'all'; // all or unique
+
+    if (type === 'unique') {
+      const [visitors, totalResult] = await Promise.all([
+        Visit.aggregate([
+          { $sort: { createdAt: -1 } },
+          {
+            $group: {
+              _id: '$visitorId',
+              latestVisit: { $first: '$$ROOT' }
+            }
+          },
+          { $sort: { 'latestVisit.createdAt': -1 } },
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          {
+            $project: {
+              _id: '$latestVisit._id',
+              visitorId: '$_id',
+              email: '$latestVisit.email',
+              ip: '$latestVisit.ip',
+              userAgent: '$latestVisit.userAgent',
+              calculatedNamaz: '$latestVisit.calculatedNamaz',
+              isPwaInstall: '$latestVisit.isPwaInstall',
+              createdAt: '$latestVisit.createdAt'
+            }
+          }
+        ]),
+        Visit.aggregate([
+          { $group: { _id: '$visitorId' } },
+          { $count: 'count' }
+        ])
+      ]);
+
+      const total = totalResult.length > 0 ? totalResult[0].count : 0;
+      return res.json({
+        success: true,
+        visitors,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit)
+      });
+    } else {
+      // type === 'all'
+      const [visitors, total] = await Promise.all([
+        Visit.find()
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .select('email ip userAgent calculatedNamaz isPwaInstall createdAt visitorId'),
+        Visit.countDocuments()
+      ]);
+
+      return res.json({
+        success: true,
+        visitors,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit)
+      });
+    }
+  } catch (err) {
+    console.error('Admin visitors error:', err);
+    return res.status(500).json({ success: false, message: 'Server error fetching visitors' });
   }
 });
 
