@@ -7,6 +7,59 @@ import { requireAdmin } from '../middleware/adminAuth.js';
 
 const router = express.Router();
 
+const getMongoWeek = (date) => {
+  const janFirst = new Date(date.getFullYear(), 0, 1);
+  const janFirstDay = janFirst.getDay();
+  const firstSunday = new Date(janFirst);
+  if (janFirstDay !== 0) {
+    firstSunday.setDate(janFirst.getDate() + (7 - janFirstDay));
+  }
+  
+  if (date < firstSunday) {
+    return 0;
+  }
+  
+  const diffTime = date.getTime() - firstSunday.getTime();
+  const diffDays = Math.floor(diffTime / (24 * 60 * 60 * 1000));
+  return Math.floor(diffDays / 7) + 1;
+};
+
+const fillMissingDates = (data, filter, now = new Date()) => {
+  const result = [];
+  const map = new Map(data.map(item => [item._id, item.count]));
+
+  if (filter === 'month') {
+    // Generate last 12 months
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const key = `${year}-${month}`;
+      result.push({ _id: key, count: map.get(key) || 0 });
+    }
+  } else if (filter === 'week') {
+    // Generate last 4 weeks (since user wants past 4 weeks)
+    for (let i = 3; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000);
+      const year = d.getFullYear();
+      const weekNum = getMongoWeek(d);
+      const key = `${year}-W${weekNum}`;
+      result.push({ _id: key, count: map.get(key) || 0 });
+    }
+  } else {
+    // Default: day (from the 1st of the current calendar month to the current date)
+    const year = now.getFullYear();
+    const monthIndex = now.getMonth();
+    const currentDate = now.getDate();
+    for (let d = 1; d <= currentDate; d++) {
+      const dateStr = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      result.push({ _id: dateStr, count: map.get(dateStr) || 0 });
+    }
+  }
+
+  return result;
+};
+
 // POST /api/admin/login
 router.post('/login', (req, res) => {
   const { email, password } = req.body;
@@ -43,16 +96,16 @@ router.get('/stats', requireAdmin, async (req, res) => {
     let groupFormat;
 
     if (visitFilter === 'week') {
-      // Last 12 weeks
-      visitStartDate = new Date(now.getTime() - 12 * 7 * 24 * 60 * 60 * 1000);
+      // Last 4 weeks
+      visitStartDate = new Date(now.getTime() - 4 * 7 * 24 * 60 * 60 * 1000);
       groupFormat = 'week';
     } else if (visitFilter === 'month') {
       // Last 12 months
       visitStartDate = new Date(now.getFullYear() - 1, now.getMonth() + 1, 1);
       groupFormat = '%Y-%m';
     } else {
-      // Last 30 days (default)
-      visitStartDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      // Start of the current calendar month
+      visitStartDate = new Date(now.getFullYear(), now.getMonth(), 1);
       groupFormat = '%Y-%m-%d';
     }
 
@@ -83,6 +136,7 @@ router.get('/stats', requireAdmin, async (req, res) => {
       totalVisits,
       pwaInstalls,
       calculatedNamazCount,
+      namazManagedCount,
       uniqueVisitors,
       visitorGrowth,
       recentVisitors
@@ -96,12 +150,12 @@ router.get('/stats', requireAdmin, async (req, res) => {
         { $group: { _id: '$rating', count: { $sum: 1 } } },
         { $sort: { _id: 1 } }
       ]),
-      // User signups per day for the last 30 days
+      // User signups per month for the last 12 months
       User.aggregate([
-        { $match: { createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } },
+        { $match: { createdAt: { $gte: new Date(now.getFullYear() - 1, now.getMonth() + 1, 1) } } },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
             count: { $sum: 1 }
           }
         },
@@ -109,10 +163,12 @@ router.get('/stats', requireAdmin, async (req, res) => {
       ]),
       // 1. Total visits
       Visit.countDocuments(),
-      // 2. PWA installs
-      Visit.countDocuments({ isPwaInstall: true }),
+      // 2. PWA installs (unique devices count)
+      Visit.distinct('visitorId', { isPwaInstall: true }).then(arr => arr.length),
       // 3. Calculated namaz count
       Visit.countDocuments({ calculatedNamaz: true }),
+      // 3b. Managed namaz count
+      Visit.countDocuments({ namazManaged: true }),
       // 4. Unique visitors (count distinct visitorIds)
       Visit.distinct('visitorId').then(arr => arr.length),
       // 5. Visitor growth grouped by day/week/month
@@ -130,7 +186,7 @@ router.get('/stats', requireAdmin, async (req, res) => {
       Visit.find()
         .sort({ createdAt: -1 })
         .limit(20)
-        .select('email ip userAgent calculatedNamaz isPwaInstall createdAt visitorId')
+        .select('email ip userAgent calculatedNamaz namazManaged isPwaInstall createdAt visitorId')
     ]);
 
     const avgRating = avgRatingResult.length > 0 ? Math.round(avgRatingResult[0].avg * 10) / 10 : 0;
@@ -141,9 +197,13 @@ router.get('/stats', requireAdmin, async (req, res) => {
       if (r._id >= 1 && r._id <= 5) ratingDist[r._id - 1] = r.count;
     });
 
-    // Calculate average visits per active period in the graph
-    const totalGroupedVisits = visitorGrowth.reduce((sum, item) => sum + item.count, 0);
-    const avgVisits = visitorGrowth.length > 0 ? Math.round((totalGroupedVisits / visitorGrowth.length) * 10) / 10 : 0;
+    // Zero-fill missing dates for visitor growth & user growth to display continuous timelines
+    const filledVisitorGrowth = fillMissingDates(visitorGrowth, visitFilter, now);
+    const filledUserGrowth = fillMissingDates(userGrowth, 'month', now);
+
+    // Calculate average visits per period in the graph
+    const totalGroupedVisits = filledVisitorGrowth.reduce((sum, item) => sum + item.count, 0);
+    const avgVisits = filledVisitorGrowth.length > 0 ? Math.round((totalGroupedVisits / filledVisitorGrowth.length) * 10) / 10 : 0;
 
     return res.json({
       success: true,
@@ -154,13 +214,13 @@ router.get('/stats', requireAdmin, async (req, res) => {
         avgRating,
         recentUsers,
         ratingDistribution: ratingDist,
-        userGrowth,
-        // NEW visitor metrics returned
+        userGrowth: filledUserGrowth,
         totalVisits,
         pwaInstalls,
         calculatedNamazCount,
+        namazManagedCount,
         uniqueVisitors,
-        visitorGrowth,
+        visitorGrowth: filledVisitorGrowth,
         avgVisits,
         recentVisitors
       }
@@ -253,6 +313,7 @@ router.get('/visitors', requireAdmin, async (req, res) => {
               ip: '$latestVisit.ip',
               userAgent: '$latestVisit.userAgent',
               calculatedNamaz: '$latestVisit.calculatedNamaz',
+              namazManaged: '$latestVisit.namazManaged',
               isPwaInstall: '$latestVisit.isPwaInstall',
               createdAt: '$latestVisit.createdAt'
             }
@@ -279,7 +340,7 @@ router.get('/visitors', requireAdmin, async (req, res) => {
           .sort({ createdAt: -1 })
           .skip((page - 1) * limit)
           .limit(limit)
-          .select('email ip userAgent calculatedNamaz isPwaInstall createdAt visitorId'),
+          .select('email ip userAgent calculatedNamaz namazManaged isPwaInstall createdAt visitorId'),
         Visit.countDocuments()
       ]);
 

@@ -121,4 +121,25 @@ router.post('/pwa-install', async (req, res) => {
   }
 });
 
+// POST /api/analytics/manage - Mark that a user managed/adjusted namaz in this session
+router.post('/manage', async (req, res) => {
+  try {
+    const { sessionToken } = req.body;
+    if (!sessionToken) {
+      return res.status(400).json({ success: false, message: 'Session token is required' });
+    }
+
+    const visit = await Visit.findOneAndUpdate(
+      { sessionToken },
+      { $set: { namazManaged: true } },
+      { new: true }
+    );
+
+    return res.status(200).json({ success: true, visit });
+  } catch (error) {
+    console.error('Error updating management event:', error);
+    return res.status(500).json({ success: false, message: 'Server error updating management status' });
+  }
+});
+
 export default router;

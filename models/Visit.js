@@ -33,6 +33,10 @@ const visitSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
+    namazManaged: {
+      type: Boolean,
+      default: false
+    },
     isPwaInstall: {
       type: Boolean,
       default: false
