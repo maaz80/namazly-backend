@@ -9,6 +9,7 @@ import recordRoutes from './routes/records.js';
 import reviewRoutes from './routes/reviews.js';
 import adminRoutes from './routes/admin.js';
 import analyticsRoutes from './routes/analytics.js';
+import masailRoutes from './routes/masail.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -45,6 +46,7 @@ app.use('/api/records', recordRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/masail', masailRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => res.json({ status: 'ok', message: 'Namazly API is running' }));
