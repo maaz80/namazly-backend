@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import Review from '../models/Review.js';
 import Visit from '../models/Visit.js';
+import PageView from '../models/PageView.js';
 import { requireAdmin } from '../middleware/adminAuth.js';
 
 const router = express.Router();
@@ -139,7 +140,8 @@ router.get('/stats', requireAdmin, async (req, res) => {
       namazManagedCount,
       uniqueVisitors,
       visitorGrowth,
-      recentVisitors
+      recentVisitors,
+      pageViews
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ createdAt: { $gte: startOfToday } }),
@@ -186,7 +188,11 @@ router.get('/stats', requireAdmin, async (req, res) => {
       Visit.find()
         .sort({ createdAt: -1 })
         .limit(20)
-        .select('email ip userAgent calculatedNamaz namazManaged isPwaInstall createdAt visitorId')
+        .select('email ip userAgent calculatedNamaz namazManaged isPwaInstall createdAt visitorId'),
+      // 7. Page-wise view statistics
+      PageView.find()
+        .sort({ views: -1 })
+        .limit(100)
     ]);
 
     const avgRating = avgRatingResult.length > 0 ? Math.round(avgRatingResult[0].avg * 10) / 10 : 0;
@@ -222,7 +228,8 @@ router.get('/stats', requireAdmin, async (req, res) => {
         uniqueVisitors,
         visitorGrowth: filledVisitorGrowth,
         avgVisits,
-        recentVisitors
+        recentVisitors,
+        pageViews
       }
     });
   } catch (err) {

@@ -1,6 +1,7 @@
 import express from 'express';
 import Visit from '../models/Visit.js';
 import User from '../models/User.js';
+import PageView from '../models/PageView.js';
 
 const router = express.Router();
 
@@ -139,6 +140,28 @@ router.post('/manage', async (req, res) => {
   } catch (error) {
     console.error('Error updating management event:', error);
     return res.status(500).json({ success: false, message: 'Server error updating management status' });
+  }
+});
+
+// POST /api/analytics/pageview - Track views per page path
+router.post('/pageview', async (req, res) => {
+  try {
+    const { path } = req.body;
+    if (!path) {
+      return res.status(400).json({ success: false, message: 'Path is required' });
+    }
+
+    // Increment views for the path (using upsert to create if not exists)
+    const pageView = await PageView.findOneAndUpdate(
+      { path },
+      { $inc: { views: 1 } },
+      { upsert: true, new: true }
+    );
+
+    return res.status(200).json({ success: true, pageView });
+  } catch (error) {
+    console.error('Error tracking pageview:', error);
+    return res.status(500).json({ success: false, message: 'Server error tracking pageview' });
   }
 });
 
