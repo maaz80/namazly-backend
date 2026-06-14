@@ -1,6 +1,27 @@
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import Masla from '../models/Masla.js';
 import { requireAdmin } from '../middleware/adminAuth.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load masail.json into memory
+let staticMasailList = [];
+try {
+  const jsonPath = path.join(__dirname, '../masail.json');
+  if (fs.existsSync(jsonPath)) {
+    const rawData = fs.readFileSync(jsonPath, 'utf8');
+    staticMasailList = JSON.parse(rawData);
+    console.log(`Loaded ${staticMasailList.length} masail items from static JSON into memory.`);
+  } else {
+    console.warn("masail.json not found in server directory!");
+  }
+} catch (err) {
+  console.error("Failed to load static masail.json:", err);
+}
 
 const router = express.Router();
 
@@ -75,36 +96,63 @@ router.get('/views', async (req, res) => {
   }
 });
 
-// GET /api/masail/detail/:slug — record view and return count for a masla
+// GET /api/masail/detail/:slug — return details and related masail for a slug, and increment view count
 router.get('/detail/:slug', async (req, res) => {
   try {
     const { slug } = req.params;
     
-    // Find and increment or upsert the view count
-    const masla = await Masla.findOneAndUpdate(
+    // 1. Find the masla in our in-memory static list
+    let masla = staticMasailList.find(m => m.slug === slug);
+    
+    // 2. If not found in static list, check MongoDB (in case it was added via admin panel)
+    if (!masla) {
+      masla = await Masla.findOne({ slug });
+    }
+
+    if (!masla) {
+      return res.status(404).json({ success: false, message: 'Ruling not found.' });
+    }
+
+    // Convert mongoose document to plain object if fetched from DB
+    const maslaObj = masla.toObject ? masla.toObject() : { ...masla };
+
+    // 3. Record/Increment the views in MongoDB
+    const dbMasla = await Masla.findOneAndUpdate(
       { slug },
       { 
         $inc: { views: 1 },
         $setOnInsert: {
-          question: "Static Question Reference",
-          answer: "Static Answer Reference",
-          category: "General"
+          question: maslaObj.question,
+          answer: maslaObj.answer,
+          category: maslaObj.category || 'General',
+          authority: maslaObj.authority || 'Darul Ifta',
+          reference: maslaObj.reference || 'N/A'
         }
       },
       { 
         upsert: true, 
-        new: true, 
+        new: true,
         runValidators: false,
         setDefaultsOnInsert: true 
       }
     );
 
+    // Update views in the returned object
+    maslaObj.views = dbMasla.views;
+
+    // 4. Fetch up to 5 related masail in the same category
+    const related = staticMasailList
+      .filter(m => m.category === maslaObj.category && m.slug !== slug)
+      .slice(0, 5);
+
     return res.json({
       success: true,
-      views: masla.views
+      masla: maslaObj,
+      related,
+      views: dbMasla.views
     });
   } catch (err) {
-    console.error('Error tracking masla view:', err);
+    console.error('Error fetching masla details:', err);
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
