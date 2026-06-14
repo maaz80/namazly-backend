@@ -57,38 +57,55 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/masail/detail/:slug — retrieve single masla by slug and get related masail
+// GET /api/masail/views — get map of views for all viewed masail
+router.get('/views', async (req, res) => {
+  try {
+    const viewedList = await Masla.find({}).select('slug views');
+    const viewsMap = {};
+    viewedList.forEach(v => {
+      viewsMap[v.slug] = v.views;
+    });
+    return res.json({
+      success: true,
+      viewsMap
+    });
+  } catch (err) {
+    console.error('Error fetching views map:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// GET /api/masail/detail/:slug — record view and return count for a masla
 router.get('/detail/:slug', async (req, res) => {
   try {
     const { slug } = req.params;
     
-    // Find the current masla
+    // Find and increment or upsert the view count
     const masla = await Masla.findOneAndUpdate(
       { slug },
-      { $inc: { views: 1 } },
-      { new: true }
+      { 
+        $inc: { views: 1 },
+        $setOnInsert: {
+          question: "Static Question Reference",
+          answer: "Static Answer Reference",
+          category: "General"
+        }
+      },
+      { 
+        upsert: true, 
+        new: true, 
+        runValidators: false,
+        setDefaultsOnInsert: true 
+      }
     );
-
-    if (!masla) {
-      return res.status(404).json({ success: false, message: 'Masla not found' });
-    }
-
-    // Get related questions (same category, excluding current)
-    const related = await Masla.find({
-      category: masla.category,
-      _id: { $ne: masla._id }
-    })
-      .limit(5)
-      .select('question slug category');
 
     return res.json({
       success: true,
-      masla,
-      related
+      views: masla.views
     });
   } catch (err) {
-    console.error('Error fetching masla details:', err);
-    return res.status(500).json({ success: false, message: 'Server error fetching masla details' });
+    console.error('Error tracking masla view:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
