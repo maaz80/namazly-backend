@@ -29,7 +29,7 @@ const fillMissingDates = (data, filter, now = new Date()) => {
   const result = [];
   const map = new Map(data.map(item => [item._id, item.count]));
 
-  if (filter === 'month') {
+  if (filter === 'month' || filter === '1year') {
     // Generate last 12 months
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -38,9 +38,18 @@ const fillMissingDates = (data, filter, now = new Date()) => {
       const key = `${year}-${month}`;
       result.push({ _id: key, count: map.get(key) || 0 });
     }
+  } else if (filter === '6month') {
+    // Generate last 6 months
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const key = `${year}-${month}`;
+      result.push({ _id: key, count: map.get(key) || 0 });
+    }
   } else if (filter === 'week') {
-    // Generate last 4 weeks (since user wants past 4 weeks)
-    for (let i = 3; i >= 0; i--) {
+    // Generate last 8 weeks
+    for (let i = 7; i >= 0; i--) {
       const d = new Date(now.getTime() - i * 7 * 24 * 60 * 60 * 1000);
       const year = d.getFullYear();
       const weekNum = getMongoWeek(d);
@@ -88,7 +97,8 @@ router.post('/login', (req, res) => {
 // GET /api/admin/stats — aggregate dashboard statistics
 router.get('/stats', requireAdmin, async (req, res) => {
   try {
-    const visitFilter = req.query.visitFilter || 'day'; // day, week, month
+    const visitFilter = req.query.visitFilter || 'day'; // day, week, month, 6month, 1year
+    const signupFilter = req.query.signupFilter || 'day'; // day, week, month, 6month, 1year
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
@@ -97,12 +107,16 @@ router.get('/stats', requireAdmin, async (req, res) => {
     let groupFormat;
 
     if (visitFilter === 'week') {
-      // Last 4 weeks
-      visitStartDate = new Date(now.getTime() - 4 * 7 * 24 * 60 * 60 * 1000);
+      // Last 8 weeks
+      visitStartDate = new Date(now.getTime() - 8 * 7 * 24 * 60 * 60 * 1000);
       groupFormat = 'week';
-    } else if (visitFilter === 'month') {
+    } else if (visitFilter === 'month' || visitFilter === '1year') {
       // Last 12 months
       visitStartDate = new Date(now.getFullYear() - 1, now.getMonth() + 1, 1);
+      groupFormat = '%Y-%m';
+    } else if (visitFilter === '6month') {
+      // Last 6 months
+      visitStartDate = new Date(now.getFullYear(), now.getMonth() - 5, 1);
       groupFormat = '%Y-%m';
     } else {
       // Start of the current calendar month
@@ -113,7 +127,6 @@ router.get('/stats', requireAdmin, async (req, res) => {
     // Build the aggregation group pipeline for visits
     let groupIdStage;
     if (visitFilter === 'week') {
-      // MongoDB group by calendar week
       groupIdStage = {
         $concat: [
           { $dateToString: { format: '%Y', date: '$createdAt' } },
@@ -123,6 +136,42 @@ router.get('/stats', requireAdmin, async (req, res) => {
       };
     } else {
       groupIdStage = { $dateToString: { format: groupFormat, date: '$createdAt' } };
+    }
+
+    // Define date boundaries for signup graph based on selected filter
+    let signupStartDate;
+    let signupGroupFormat;
+
+    if (signupFilter === 'week') {
+      // Last 8 weeks
+      signupStartDate = new Date(now.getTime() - 8 * 7 * 24 * 60 * 60 * 1000);
+      signupGroupFormat = 'week';
+    } else if (signupFilter === 'month' || signupFilter === '1year') {
+      // Last 12 months
+      signupStartDate = new Date(now.getFullYear() - 1, now.getMonth() + 1, 1);
+      signupGroupFormat = '%Y-%m';
+    } else if (signupFilter === '6month') {
+      // Last 6 months
+      signupStartDate = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+      signupGroupFormat = '%Y-%m';
+    } else {
+      // Start of the current calendar month
+      signupStartDate = new Date(now.getFullYear(), now.getMonth(), 1);
+      signupGroupFormat = '%Y-%m-%d';
+    }
+
+    // Build the aggregation group pipeline for signups
+    let signupGroupIdStage;
+    if (signupFilter === 'week') {
+      signupGroupIdStage = {
+        $concat: [
+          { $dateToString: { format: '%Y', date: '$createdAt' } },
+          '-W',
+          { $toString: { $week: '$createdAt' } }
+        ]
+      };
+    } else {
+      signupGroupIdStage = { $dateToString: { format: signupGroupFormat, date: '$createdAt' } };
     }
 
     const [
@@ -152,12 +201,12 @@ router.get('/stats', requireAdmin, async (req, res) => {
         { $group: { _id: '$rating', count: { $sum: 1 } } },
         { $sort: { _id: 1 } }
       ]),
-      // User signups per month for the last 12 months
+      // User signups grouped by signupFilter
       User.aggregate([
-        { $match: { createdAt: { $gte: new Date(now.getFullYear() - 1, now.getMonth() + 1, 1) } } },
+        { $match: { createdAt: { $gte: signupStartDate } } },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
+            _id: signupGroupIdStage,
             count: { $sum: 1 }
           }
         },
@@ -205,7 +254,7 @@ router.get('/stats', requireAdmin, async (req, res) => {
 
     // Zero-fill missing dates for visitor growth & user growth to display continuous timelines
     const filledVisitorGrowth = fillMissingDates(visitorGrowth, visitFilter, now);
-    const filledUserGrowth = fillMissingDates(userGrowth, 'month', now);
+    const filledUserGrowth = fillMissingDates(userGrowth, signupFilter, now);
 
     // Calculate average visits per period in the graph
     const totalGroupedVisits = filledVisitorGrowth.reduce((sum, item) => sum + item.count, 0);
