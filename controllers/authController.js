@@ -51,9 +51,9 @@ export const googleAuth = async (req, res) => {
       user = await User.create({ googleId, email, name, avatar });
     }
 
-    // Generate JWT token
+    // Generate JWT token (30 days expiration)
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET || 'namazly_secret', {
-      expiresIn: '7d',
+      expiresIn: '30d',
     });
 
     // Store user in session
